@@ -1,0 +1,72 @@
+name: Build/Scan/Push Container
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  Build-Scan-Push:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    env:
+      IMAGE_REGISTRY: ${{ vars.IMAGE_REGISTRY }}
+      IMAGE_REGISTRY_USER: ${{ secrets.IMAGE_REGISTRY_USER }}
+      IMAGE_REGISTRY_PASS: ${{ secrets.IMAGE_REGISTRY_PASS }}
+      IMAGE_REPO: ${{ vars.IMAGE_REPO }}
+      IMAGE_TAG: ${{ vars.IMAGE_TAG }}
+      WIZ_CLIENT_ID: ${{ secrets.WIZ_CLIENT_ID }}
+      WIZ_CLIENT_SECRET: ${{ secrets.WIZ_CLIENT_SECRET }}
+      WIZ_POLICIES: "Default vulnerabilities policy"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Expand Container Registry Variables
+        run: |-
+          if [[ -z "${IMAGE_REGISTRY}" ]]; then
+            echo "IMAGE_REGISTRY_FULL=${IMAGE_REPO}" >> $GITHUB_ENV
+          else
+            echo "IMAGE_REGISTRY_FULL=${IMAGE_REGISTRY}/${IMAGE_REPO}" >> $GITHUB_ENV
+          fi
+
+      - name: Build the latest Docker image
+        run: docker build -t ${IMAGE_REGISTRY_FULL}:${IMAGE_TAG} ./src
+
+      - name: Download Wiz CLI
+        run: curl -o wizcli https://wizcli.app.wiz.io/latest/wizcli && chmod +x wizcli
+
+      - name: Authenticate to Wiz
+        run: |-
+          if [[ "${{ vars.WIZ_ENV }}" != "app" ]]; then export WIZ_ENV=${{ vars.WIZ_ENV }}; fi
+          sudo -E ./wizcli auth --id "$WIZ_CLIENT_ID" --secret "$WIZ_CLIENT_SECRET"
+
+      - name: Run Wiz CLI image scan
+        id: scan
+        run: |-
+          if [[ "${{ vars.WIZ_ENV }}" != "app" ]]; then export WIZ_ENV=${{ vars.WIZ_ENV }}; fi
+          sudo -E ./wizcli docker scan -i ${IMAGE_REGISTRY_FULL}:${IMAGE_TAG} -p "${WIZ_POLICIES}" --policy-hits-only \
+          --driver mountWithLayers --dockerfile "./src/Dockerfile" --output wiz-output.json,sarif,true --tag github_action_run_id=${{ github.run_id }}
+        continue-on-error: true
+
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: wiz-output.json
+          category: wiz
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.IMAGE_REGISTRY }}
+          username: ${{ secrets.IMAGE_REGISTRY_USER }}
+          password: ${{ secrets.IMAGE_REGISTRY_PASS }}
+
+      - name: Push the latest Docker image
+        run: docker push ${IMAGE_REGISTRY_FULL}:${IMAGE_TAG}
+
+      - name: Run Wiz CLI image tag
+        run: |-
+          if [[ "${{ vars.WIZ_ENV }}" != "app" ]]; then export WIZ_ENV=${{ vars.WIZ_ENV }}; fi
+          sudo -E ./wizcli docker tag -i ${IMAGE_REGISTRY_FULL}:${IMAGE_TAG}

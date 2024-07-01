@@ -1,0 +1,46 @@
+name: Wiz CLI IaC Scan
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  Wiz-IaC-Scan:
+    runs-on: ubuntu-latest
+    env:
+      WIZ_CLIENT_ID: ${{ secrets.WIZ_CLIENT_ID }}
+      WIZ_CLIENT_SECRET: ${{ secrets.WIZ_CLIENT_SECRET }}
+      WIZ_IAC_POLICY: "nixlab-iac-audit"
+      WIZ_SECRETS_POLICY: "nixlab-secrets-audit"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Wiz CLI
+        run: curl -o wizcli https://wizcli.app.wiz.io/latest/wizcli && chmod +x wizcli
+
+      - name: Authenticate to Wiz
+        run: |-
+          if [[ "${{ vars.WIZ_ENV }}" != "app" ]]; then export WIZ_ENV=${{ vars.WIZ_ENV }}; fi
+          ./wizcli auth --id "$WIZ_CLIENT_ID" --secret "$WIZ_CLIENT_SECRET"
+
+      - name: Run Wiz CLI IaC Scan
+        run: |-
+          if [[ "${{ vars.WIZ_ENV }}" != "app" ]]; then export WIZ_ENV=${{ vars.WIZ_ENV }}; fi
+          ./wizcli iac scan --path "." -p "$WIZ_IAC_POLICY" -p "$WIZ_SECRETS_POLICY" --tag github_action_run_id=${{ github.run_id }} -o wiz-output.json,sarif,true
+
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: wiz-output.json
+          category: wiz-iac
